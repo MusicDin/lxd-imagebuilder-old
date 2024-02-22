@@ -59,7 +59,7 @@ func (s *slackware) Run() error {
 
 	// find package tools
 	matches, err := filepath.Glob(filepath.Join(pkgDir, "pkgtools-*.t*z"))
-	if err != nil {
+	if err != nil || len(matches) == 0 {
 		return fmt.Errorf("Failed to match pattern: %w", err)
 	}
 
