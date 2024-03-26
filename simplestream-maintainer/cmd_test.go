@@ -182,6 +182,103 @@ func TestBuildIndex(t *testing.T) {
 	}
 }
 
+func TestBuildProductCatalog_ChecksumVerification(t *testing.T) {
+	t.Parallel()
+
+	// Mimic a product directory structure.
+	tmpDir := filepath.Join(t.TempDir(), "images/ubuntu/noble/amd64/cloud")
+
+	checksums := []string{
+		// Checksums for content "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  lxd.tar.xz",    //Valid for "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  root.squashfs", //Valid for "test-content".
+		"0a_InvalidSHA256Checksum_72beeb5b93124cce1bf3701c9d6cdeb543cb73e  disk.qcow2",    // Invalid checksum.
+	}
+
+	tests := []struct {
+		Name         string
+		Mock         testutils.ProductMock
+		WantVersions []string // Map of product id and expected versions.
+	}{
+		{
+			Name: "Ensure checksum validation is ignored when checksum file is missing",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-00/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs", "disk.qcow2")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_03", "lxd.tar.xz", "disk.qcow2")
+				return p
+			}(),
+			WantVersions: []string{
+				"2024_01_01",
+				"2024_01_02",
+				"2024_01_03",
+			},
+		},
+		{
+			Name: "Ensure valid versions are included the product catalog.",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-01/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
+				return p
+			}(),
+			WantVersions: []string{
+				"2024_01_01",
+			},
+		},
+		{
+			Name: "Ensure versions with mismatched checksums are excluded from the product catalog",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-02/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs", "disk.qcow2").SetChecksumFile(checksums...)
+				return p
+			}(),
+			WantVersions: []string{},
+		},
+		{
+			Name: "Ensure version is excluded if checksum file exists, but checksum for a certain item is missing",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-03/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs", "no-sha.qcow2").SetChecksumFile(checksums...)
+				return p
+			}(),
+			WantVersions: []string{},
+		},
+		{
+			Name: "Ensure version with mismatched checksums is excluded but product catalog is still created",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-10/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
+				// testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs", "disk.qcow2").SetChecksumFile(checksums...)
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_03", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
+				return p
+			}(),
+			WantVersions: []string{
+				"2024_01_01",
+				"2024_01_03",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			p := test.Mock
+
+			// Build product catalog.
+			catalog, err := buildProductCatalog(context.Background(), tmpDir, "v1", p.StreamName(), 2)
+			require.NoError(t, err, "Failed building index and catalog files!")
+
+			// Fetch the product from catalog by its id.
+			productID := strings.Join(strings.Split(p.RelPath(), "/")[1:], ":")
+			product, ok := catalog.Products[productID]
+
+			// Ensure product and all expected product versions are found.
+			require.True(t, ok, "Product not found in the catalog!")
+			require.ElementsMatch(t, test.WantVersions, shared.MapKeys(product.Versions))
+		})
+	}
+}
+
 // GenFile generates a temporary file of the given size.
 func GenFile(t *testing.T, sizeInMB int) string {
 	t.Helper()

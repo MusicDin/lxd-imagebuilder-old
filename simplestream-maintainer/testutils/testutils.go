@@ -117,6 +117,8 @@ func (p ProductMock) StreamName() string {
 
 type VersionMock struct {
 	common
+
+	t *testing.T
 }
 
 // MockVersion creates product version directory on the given path and uses
@@ -125,16 +127,28 @@ type VersionMock struct {
 // instance is returned.
 func MockVersion(t *testing.T, rootDir string, versionRelPath string, itemNames ...string) VersionMock {
 	v := VersionMock{
-		common{
+		common: common{
 			rootDir: rootDir,
 			relPath: versionRelPath,
 		},
+		t: t,
 	}
 
 	// Create version items.
 	for _, name := range itemNames {
 		MockItem(t, v.AbsPath(), name, "test-content")
 	}
+
+	return v
+}
+
+// SetChecksumFile ..
+func (v VersionMock) SetChecksumFile(entry ...string) VersionMock {
+	content := strings.Join(entry, "\n")
+
+	checksumPath := filepath.Join(v.AbsPath(), stream.FileChecksumSHA256)
+	err := os.WriteFile(checksumPath, []byte(content), os.ModePerm)
+	require.NoError(v.t, err)
 
 	return v
 }
