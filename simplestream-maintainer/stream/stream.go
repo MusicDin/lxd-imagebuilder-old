@@ -22,19 +22,23 @@ var (
 	// filesystem (qcow2/squashfs) must be present.
 	ErrVersionIncomplete = errors.New("Product version is incomplete")
 
+	// ErrVersionInvalidImageConfig indicates version's image config is invalid.
+	ErrVersionInvalidImageConfig = errors.New("Product version has invalid image config")
+
 	// ErrProductInvalidPath indicates that product's path is invalid because
 	// either the directory on the given path does not exist, or it's path
 	// does not match the expected format.
 	ErrProductInvalidPath = errors.New("Invalid product path")
-
-	// ErrProductInvalidConfig indicating product's configuration file is invalid.
-	ErrProductInvalidConfig = errors.New("Invalid product config")
 )
 
 // Static list of file names.
 const (
 	// FileChecksumSHA256 is the name of the checksum file containing SHA256 hashes.
 	FileChecksumSHA256 = "SHA256SUMS"
+
+	// FileImageConfig is the name of the file that contains additional information
+	// about the version.
+	FileImageConfig = "image.yaml"
 )
 
 // ItemType is a type of the file that item holds.
@@ -89,9 +93,14 @@ var allowedItemExtensions = []string{
 	ItemExtDiskKVMDelta,
 }
 
-// List of valid product config names.
-var productConfigNames = []string{
-	"config.yaml",
+// ImageConfig contains additional information about the product version (image).
+type ImageConfig struct {
+	// Map of release aliases. Key represents the release name and value is
+	// a comma delimited string of additional release aliases.
+	ReleaseAliases map[string]string `yaml:"release_aliases"`
+
+	// Map of the image requirements.
+	Requirements map[string]string `yaml:"requirements"`
 }
 
 // Item represents a file within a product version.
@@ -138,6 +147,9 @@ type Version struct {
 	// Checksums of files within the version.
 	Checksums map[string]string `json:"-"`
 
+	// ImageConfig contains additional information about the product version.
+	ImageConfig *ImageConfig `json:"-"`
+
 	// Map of items found within the version, where the map key
 	// represents file name.
 	Items map[string]Item `json:"items,omitempty"`
@@ -180,15 +192,6 @@ func (p Product) ID() string {
 // RelPath returns the product's path relative to the stream's root directory.
 func (p Product) RelPath() string {
 	return filepath.Join(p.Distro, p.Release, p.Architecture, p.Variant)
-}
-
-// ProductConfig contains additional data for all product versions (if found).
-type ProductConfig struct {
-	// A comma delimited release aliases that are used to construct final product aliases.
-	ReleaseAliases string `json:"release_aliases"`
-
-	// Map of the image requirements.
-	Requirements map[string]string `json:"requirements"`
 }
 
 // ProductCatalog contains all products.
@@ -311,57 +314,63 @@ func GetProduct(rootDir string, productRelPath string) (*Product, error) {
 	}
 
 	for _, f := range files {
-		if f.IsDir() {
-			versionRelPath := filepath.Join(productRelPath, f.Name())
-
-			// Parse product version.
-			version, err := GetVersion(rootDir, versionRelPath, false)
-			if err != nil {
-				if errors.Is(err, ErrVersionIncomplete) {
-					// Ignore incomplete versions.
-					continue
-				}
-
-				return nil, err
-			}
-
-			if p.Versions == nil {
-				p.Versions = make(map[string]Version)
-			}
-
-			p.Versions[f.Name()] = *version
-		} else if lxdShared.ValueInSlice(f.Name(), productConfigNames) {
-			configPath := filepath.Join(productPath, f.Name())
-
-			// Parse product config.
-			config, err := shared.ReadYAMLFile(configPath, &ProductConfig{})
-			if err != nil {
-				return nil, fmt.Errorf("product %q: %w: %w", productRelPath, ErrProductInvalidConfig, err)
-			}
-
-			// Evaluate extra aliases.
-			releaseAliases := strings.Split(config.ReleaseAliases, ",")
-			for _, release := range releaseAliases {
-				// Remove all spaces, as they are not allowed.
-				release = strings.ReplaceAll(release, " ", "")
-				if release == "" {
-					continue
-				}
-
-				// Use path.Join for aliases to ignore OS specific
-				// filepath separator.
-				alias := path.Join(p.Distro, release, p.Variant)
-				aliases = append(aliases, alias)
-
-				// Add shorter alias if variant is default.
-				if p.Variant == "default" {
-					aliases = append(aliases, path.Join(p.Distro, p.Release))
-				}
-			}
-
-			// Apply config to product.
-			p.Requirements = config.Requirements
+		if !f.IsDir() {
+			continue
 		}
+
+		versionRelPath := filepath.Join(productRelPath, f.Name())
+
+		// Parse product version.
+		version, err := GetVersion(rootDir, versionRelPath, false)
+		if err != nil {
+			if errors.Is(err, ErrVersionIncomplete) {
+				// Ignore incomplete versions.
+				continue
+			}
+
+			return nil, err
+		}
+
+		// If version contains an existing config, apply additional aliases
+		// and requirements to the product.
+		if version.ImageConfig != nil {
+			// Set product requirements.
+			if version.ImageConfig.Requirements != nil {
+				p.Requirements = version.ImageConfig.Requirements
+			}
+
+			// Evaluate additional aliases.
+			for release, releaseAliases := range version.ImageConfig.ReleaseAliases {
+				if release != p.Release {
+					// Skip aliases for other releases.
+					continue
+				}
+
+				releaseAliases := strings.Split(releaseAliases, ",")
+				for _, releaseAlias := range releaseAliases {
+					// Remove all spaces, as they are not allowed.
+					releaseAlias = strings.ReplaceAll(releaseAlias, " ", "")
+					if releaseAlias == "" {
+						continue
+					}
+
+					// Use path.Join for aliases to ignore OS specific
+					// filepath separator.
+					aliases = append(aliases, path.Join(p.Distro, releaseAlias, p.Variant))
+
+					// Also add shorter alias if variant is default.
+					if p.Variant == "default" {
+						aliases = append(aliases, path.Join(p.Distro, releaseAlias))
+					}
+				}
+			}
+		}
+
+		if p.Versions == nil {
+			p.Versions = make(map[string]Version)
+		}
+
+		p.Versions[f.Name()] = *version
 	}
 
 	p.Aliases = strings.Join(aliases, ",")
@@ -393,7 +402,16 @@ func GetVersion(rootDir string, versionRelPath string, calcHashes bool) (*Versio
 			continue
 		}
 
-		if file.Name() == FileChecksumSHA256 {
+		if shared.HasSuffix(file.Name(), allowedItemExtensions...) {
+			// Get an item and calculate its hash if necessary.
+			itemRelPath := filepath.Join(versionRelPath, file.Name())
+			item, err := GetItem(rootDir, itemRelPath, calcHashes)
+			if err != nil {
+				return nil, err
+			}
+
+			version.Items[file.Name()] = *item
+		} else if file.Name() == FileChecksumSHA256 {
 			// Read the checksum file and convert it to a map
 			// of filename and checksum pairs.
 			checksumPath := filepath.Join(versionPath, file.Name())
@@ -401,23 +419,25 @@ func GetVersion(rootDir string, versionRelPath string, calcHashes bool) (*Versio
 			if err != nil {
 				return nil, fmt.Errorf("Failed to read checksums file: %w", err)
 			}
+		} else if file.Name() == FileImageConfig {
+			// Read the image config file.
+			configPath := filepath.Join(versionPath, file.Name())
 
-			continue
+			// Anonymously define a struct holding image config.
+			config := &struct {
+				Simplestreams *ImageConfig `yaml:"simplestreams,omitempty"`
+			}{}
+
+			// Read config file as a map.
+			config, err := shared.ReadYAMLFile(configPath, config)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrVersionInvalidImageConfig, err)
+			}
+
+			if config.Simplestreams != nil {
+				version.ImageConfig = config.Simplestreams
+			}
 		}
-
-		if !shared.HasSuffix(file.Name(), allowedItemExtensions...) {
-			// Skip disallowed items.
-			continue
-		}
-
-		// Get an item and calculate its hash if necessary.
-		itemRelPath := filepath.Join(versionRelPath, file.Name())
-		item, err := GetItem(rootDir, itemRelPath, calcHashes)
-		if err != nil {
-			return nil, err
-		}
-
-		version.Items[file.Name()] = *item
 	}
 
 	// Ensure version has at metadata and at least one rootfs (container, vm).
