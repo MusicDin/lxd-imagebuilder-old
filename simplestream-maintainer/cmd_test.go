@@ -185,13 +185,12 @@ func TestBuildIndex(t *testing.T) {
 func TestBuildProductCatalog_ChecksumVerification(t *testing.T) {
 	t.Parallel()
 
-	// Mimic a product directory structure.
-	tmpDir := filepath.Join(t.TempDir(), "images/ubuntu/noble/amd64/cloud")
+	tmpDir := t.TempDir()
 
 	checksums := []string{
 		// Checksums for content "test-content".
-		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  lxd.tar.xz",    //Valid for "test-content".
-		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  root.squashfs", //Valid for "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  lxd.tar.xz",    // Valid for "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  root.squashfs", // Valid for "test-content".
 		"0a_InvalidSHA256Checksum_72beeb5b93124cce1bf3701c9d6cdeb543cb73e  disk.qcow2",    // Invalid checksum.
 	}
 
@@ -249,7 +248,7 @@ func TestBuildProductCatalog_ChecksumVerification(t *testing.T) {
 			Mock: func() testutils.ProductMock {
 				p := testutils.MockProduct(t, tmpDir, "images-10/ubuntu/noble/amd64/cloud")
 				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
-				// testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs", "disk.qcow2").SetChecksumFile(checksums...)
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs", "disk.qcow2").SetChecksumFile(checksums...)
 				testutils.MockVersion(t, p.AbsPath(), "2024_01_03", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
 				return p
 			}(),
@@ -275,6 +274,92 @@ func TestBuildProductCatalog_ChecksumVerification(t *testing.T) {
 			// Ensure product and all expected product versions are found.
 			require.True(t, ok, "Product not found in the catalog!")
 			require.ElementsMatch(t, test.WantVersions, shared.MapKeys(product.Versions))
+		})
+	}
+}
+
+// Ensure delta files checksums are correctly calculated and appended
+// to the checksums file.
+func TestBuildProductCatalog_DeltaFileChecksums(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	checksums := []string{
+		// Checksums for content "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  lxd.tar.xz",    // Valid for "test-content".
+		"0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e  root.squashfs", // Valid for "test-content".
+		"0a_InvalidSHA256Checksum_72beeb5b93124cce1bf3701c9d6cdeb543cb73e  disk.qcow2",    // Invalid checksum.
+	}
+
+	tests := []struct {
+		Name          string
+		Mock          testutils.ProductMock
+		WantChecksums map[string]map[string]string // Map of version name and expected checksums (in an updated file).
+	}{
+		{
+			Name: "Ensure checksums for delta files are ignored when checksum file does not exist",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-00/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs", "disk.qcow2")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_03", "lxd.tar.xz", "disk.qcow2")
+				return p
+			}(),
+			WantChecksums: map[string]map[string]string{
+				"2024_01_01": nil,
+				"2024_01_02": nil,
+				"2024_01_03": nil,
+			},
+		},
+		{
+			Name: "Ensure checksums for delta files are appended to the checksum file",
+			Mock: func() testutils.ProductMock {
+				p := testutils.MockProduct(t, tmpDir, "images-10/ubuntu/noble/amd64/cloud")
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_01", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_02", "lxd.tar.xz", "root.squashfs", "disk.qcow2").SetChecksumFile(checksums...)
+				testutils.MockVersion(t, p.AbsPath(), "2024_01_03", "lxd.tar.xz", "root.squashfs").SetChecksumFile(checksums...)
+				return p
+			}(),
+			WantChecksums: map[string]map[string]string{
+				"2024_01_01": {
+					"lxd.tar.xz":    "0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+					"root.squashfs": "0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+					"disk.qcow2":    "0a_InvalidSHA256Checksum_72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+				},
+				"2024_01_03": {
+					"lxd.tar.xz":                      "0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+					"root.squashfs":                   "0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+					"disk.qcow2":                      "0a_InvalidSHA256Checksum_72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+					"root.2024_01_01.squashfs.vcdiff": "0a3666a0710c08aa6d0de92ce72beeb5b93124cce1bf3701c9d6cdeb543cb73e",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			p := test.Mock
+
+			// Build product catalog.
+			_, err := buildProductCatalog(context.Background(), tmpDir, "v1", p.StreamName(), 2)
+			require.NoError(t, err, "Failed building index and catalog files!")
+
+			// Read the version's checksum file and ensure checksums match.
+			for versionName, wantChecksums := range test.WantChecksums {
+				// Read version's checksum file.
+				checksumsPath := filepath.Join(p.AbsPath(), versionName, stream.FileChecksumSHA256)
+				checksums, err := stream.ReadChecksumFile(checksumsPath)
+				require.NoError(t, err, "Failed reading checksums file!")
+
+				// Ensure all expected checksums are found in the checksums file.
+				if wantChecksums == nil {
+					require.Nil(t, checksums, "Checksums file should not be created!")
+				} else {
+					require.NotNil(t, checksums, "Checksums file not found in the version!")
+					require.Equal(t, wantChecksums, checksums, "Checksums do not match!")
+				}
+			}
 		})
 	}
 }

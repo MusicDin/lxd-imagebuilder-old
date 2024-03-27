@@ -27,7 +27,7 @@ var (
 	// does not match the expected format.
 	ErrProductInvalidPath = errors.New("Invalid product path")
 
-	// ErrProductInvalidConfig indicating product's configuration file is invalid.
+	// ErrProductInvalidConfig indicates product's configuration file is invalid.
 	ErrProductInvalidConfig = errors.New("Invalid product config")
 )
 
@@ -429,6 +429,26 @@ func GetVersion(rootDir string, versionRelPath string, calcHashes bool) (*Versio
 		metaItemPath := filepath.Join(versionPath, metaItem.Name)
 
 		for _, i := range version.Items {
+			// Verify item checksum if checksums file exists. If checksums
+			// for delta files do not exist, append them to the map of checksums
+			// because they are generated during index building.
+
+			fmt.Println("checksums", version.Checksums)
+
+			if calcHashes && len(version.Checksums) > 0 {
+				checksum, ok := version.Checksums[i.Name]
+
+				if !ok && (i.Ftype == ItemTypeDiskKVMDelta || i.Ftype == ItemTypeSquashfsDelta) {
+					version.Checksums[i.Name] = i.SHA256
+				} else if i.SHA256 != checksum {
+
+					fmt.Println("checksum mismatch for item", i.Name, "\nitemSHA256", i.SHA256, "\nchecksum", checksum)
+					return nil, fmt.Errorf("%w: version %q: checksum mismatch for item %q", ErrVersionIncomplete, versionRelPath, i.Name)
+				}
+
+				continue
+			}
+
 			if !lxdShared.ValueInSlice(i.Ftype, []string{ItemTypeSquashfs, ItemTypeDiskKVM, ItemTypeRootTarXz}) {
 				// Skip files that are not required for combined checksum.
 				continue
@@ -465,7 +485,7 @@ func GetVersion(rootDir string, versionRelPath string, calcHashes bool) (*Versio
 	// At least metadata and one of squashfs or qcow2 files must exist
 	// for the version to be considered complete.
 	if !isVersionComplete {
-		return nil, fmt.Errorf("%w: %q", ErrVersionIncomplete, versionRelPath)
+		return nil, fmt.Errorf("%w: version %q: either rootfs or metadata file is missing", ErrVersionIncomplete, versionRelPath)
 	}
 
 	return &version, nil
