@@ -6,8 +6,8 @@ for LXD, and `simplestream-maintainer` for managing images on the Simplestream s
 ## Status
 Type            | Service               | Status
 ---             | ---                   | ---
-CI              | GitHub                | [![Build Status](https://github.com/canonical/lxd-imagebuilder/workflows/CI%20tests/badge.svg)](https://github.com/canonical/lxd-imagebuilder/actions)
-Project status  | CII Best Practices    | [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1728/badge)](https://bestpractices.coreinfrastructure.org/projects/1728)
+CI              | GitHub                | [![Build Status](https://github.com/canonical/lxd-imagebuilder/workflows/Tests/badge.svg)](https://github.com/canonical/lxd-imagebuilder/actions)
+
 
 
 <!-- Include start installing -->
