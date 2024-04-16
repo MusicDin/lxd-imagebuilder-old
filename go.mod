@@ -4,11 +4,6 @@ go 1.22.0
 
 toolchain go1.22.1
 
-exclude (
-	github.com/rootless-containers/proto v0.1.0
-	github.com/rootless-containers/proto/go-proto v0.0.0-20221103010429-bc555ef10687
-)
-
 require (
 	github.com/canonical/lxd v0.0.0-20240309064323-8245088b46a0
 	github.com/flosch/pongo2/v4 v4.0.2
